@@ -1,4 +1,4 @@
-"""Soccer AI Simulator v4.5 — automatic verified season-results strength ratings."""
+"""Soccer AI Simulator v4.5.1 — automatic verified season-results strength ratings."""
 from datetime import datetime, timezone
 import os
 
@@ -96,13 +96,13 @@ def readable_time(utc_string):
         return utc_string or "Date not announced"
 
 
-st.title("⚽ Soccer AI Simulator · V4.5")
+st.title("⚽ Soccer AI Simulator · V4.5.1")
 st.caption(f"La Liga · Champions League · Premier League | {SEASON_NAME} only · Automatic opponent-adjusted strengths from verified match results · Experimental predictions")
 
 with st.sidebar:
     st.header("Automatic model")
     competition = st.selectbox("Competition", list(COMPETITIONS))
-    st.caption("Team strengths, venue effects, scoring averages and the 25,000 simulation count are automatic. There are no manual strength sliders.")
+    st.caption("Team strengths, venue effects, scoring averages and the 100,000 simulation count are automatic. There are no manual strength sliders.")
     if st.button("↻ Refresh verified soccer data"):
         load_matches.clear()
         load_optional_matches.clear()
@@ -157,7 +157,7 @@ with st.spinner("Comparing opponent quality across current-season domestic and E
 fitted = fit_strength(results_by_code, as_of=selected.get('date_utc'))
 projection = project_goals(fitted, selected['hid'], selected['aid'], code, neutral=neutral)
 hxg, axg = projection['home_goals'], projection['away_goals']
-n = 25000
+n = 100000
 pred = simulate(hxg, axg, n=n, seed=42)
 exact = exact_markets(hxg, axg)
 
@@ -193,7 +193,7 @@ m1.metric(f"{home_name} win", f"{exact['home_win']:.1%}")
 m2.metric('Draw', f"{exact['draw']:.1%}")
 m3.metric(f"{away_name} win", f"{exact['away_win']:.1%}")
 st.caption(f"Model-projected goals: {home_name} **{hxg:.2f}**, {away_name} **{axg:.2f}** · Home advantage derived from available season results (ratio {fitted['home_ratio']:.2f})" + (" · Neutral venue modeled" if neutral else ""))
-st.caption("1X2 percentages are exact independent-Poisson calculations, not Monte Carlo estimates. 25,000 score simulations run automatically for scoreline distributions.")
+st.caption("1X2 percentages are exact independent-Poisson calculations, not Monte Carlo estimates. 100,000 score simulations run automatically for scoreline distributions.")
 left, right = st.columns(2)
 with left:
     st.subheader("1X2 probabilities")
