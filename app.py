@@ -8,6 +8,7 @@ import streamlit as st
 
 from model import expected_goals, simulate, rating_from_results
 from advanced import exact_markets, corner_markets, anytime_scorer, rolling_backtest
+from player_data import fixture_lookup, squad, lineups, player_statistics, stats_rows, lineup_players, estimate_scorers
 
 st.set_page_config(page_title="Soccer AI Simulator", page_icon="⚽", layout="wide")
 COMPETITIONS = {"La Liga": "PD", "Champions League": "CL", "Premier League": "PL"}
@@ -61,6 +62,34 @@ def load_matches(competition_code: str, api_token: str):
     return finished, sorted(upcoming, key=lambda item: item["date_utc"])
 
 
+def get_player_token():
+    try:
+        secret = st.secrets.get("API_FOOTBALL_KEY", "")
+    except (FileNotFoundError, KeyError):
+        secret = ""
+    return str(secret or os.getenv("API_FOOTBALL_KEY", "")).strip()
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def api_fixture(code, home, away, date, token):
+    return fixture_lookup(code, home, away, date, token)
+
+
+@st.cache_data(ttl=86400 * 7, show_spinner=False)
+def api_squad(team_id, token):
+    return squad(team_id, token)
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def api_lineups(fixture_id, token):
+    return lineups(fixture_id, token)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def api_player_stats(team_id, season, token):
+    return stats_rows(player_statistics(team_id, season, token))
+
+
 def readable_time(utc_string):
     try:
         return datetime.fromisoformat(utc_string.replace("Z", "+00:00")).astimezone().strftime("%b %d, %Y · %I:%M %p %Z")
@@ -68,7 +97,7 @@ def readable_time(utc_string):
         return utc_string or "Date not announced"
 
 
-st.title("⚽ Soccer AI Simulator · V3")
+st.title("⚽ Soccer AI Simulator · V4")
 st.caption("La Liga · Champions League · Premier League | Automatically updated match data • Experimental probabilities")
 
 with st.sidebar:
@@ -174,8 +203,63 @@ with st.expander("Enter corner averages and estimate over/under lines", expanded
             [("Over 7.5", "over_75"), ("Over 8.5", "over_85"), ("Over 9.5", "over_95"), ("Over 10.5", "over_105")]]).style.format({"Chance":"{:.1%}"}), hide_index=True)
         st.caption("Simple independent Poisson corner model. Not validated against corner statistics.")
 
-st.subheader("🥅 Anytime goalscorer — assumption-based model")
-st.warning("This app does not receive confirmed lineups, injury reports or player goal shares. These player probabilities require your own inputs; no actual players or starters are invented.")
+st.divider()
+st.subheader("👥 Automatic players and lineups — API-Football")
+st.caption("Fetches player names from team squads and, when available, confirmed starting XIs. The free API tier may not cover current-season fixtures or player statistics.")
+player_token = get_player_token()
+selected_match = selected if use_live and upcoming else None
+if not player_token:
+    st.info("Set API_FOOTBALL_KEY in Streamlit Cloud Secrets to enable automatic player lookup.")
+elif selected_match:
+    st.caption("To protect the free daily request allowance, extra player data loads only when you click the button. Results are cached.")
+    if st.button("🔎 Load players for this match"):
+        st.session_state['player_match_loaded'] = selected_match['id']
+    if st.session_state.get('player_match_loaded') == selected_match['id']:
+        try:
+            with st.spinner("Finding the match in API-Football…"):
+                match = api_fixture(COMPETITIONS[competition], home_name, away_name, selected_match['date_utc'], player_token)
+            if not match:
+                st.warning("No unambiguous matching fixture returned by API-Football. This can happen with a free-plan season restriction or different team naming. No players are assumed.")
+            else:
+                fid = (match.get('fixture') or {}).get('id')
+                teams = match.get('teams') or {}
+                hteam, ateam = (teams.get('home') or {}), (teams.get('away') or {})
+                season = int(selected_match['date_utc'][:4]) - (int(selected_match['date_utc'][5:7]) < 7)
+                confirmed = api_lineups(fid, player_token)
+                for team, team_goals in [(hteam, hxg), (ateam, axg)]:
+                    tid = team.get('id')
+                    if not tid:
+                        continue
+                    st.markdown(f"**{team.get('name', 'Team')}**")
+                    starters = lineup_players(confirmed, tid)
+                    if starters:
+                        st.success("Starting XI supplied by API-Football. Confirm match status with the official team source.")
+                        player_list = starters
+                    else:
+                        st.info("Official starting XI not available. Displaying squad members, NOT predicted starters.")
+                        player_list = api_squad(tid, player_token)
+                    if player_list:
+                        st.dataframe(pd.DataFrame([{'Name': p.get('name'), 'Position': p.get('position')} for p in player_list]), hide_index=True, use_container_width=True)
+                    else:
+                        st.warning("No squad or lineup data available for this team on your API plan.")
+                    if starters:
+                        rows = api_player_stats(tid, season, player_token)
+                        projected = estimate_scorers(rows, starters, team_goals)
+                        if projected:
+                            st.caption("Illustrative scorer estimates from available season goals/minutes and projected team goals. NOT actual xG or calibrated probabilities; first page of player stats only.")
+                            dfp = pd.DataFrame(projected)
+                            st.dataframe(dfp.style.format({'Anytime chance (illustrative)': '{:.1%}'}), hide_index=True, use_container_width=True)
+                        else:
+                            st.info("Insufficient player goals/minutes statistics to estimate scorers responsibly.")
+                    else:
+                        st.caption("Scorer probabilities unavailable without a confirmed XI; squad membership alone does not establish participation.")
+        except ValueError as exc:
+            st.error(str(exc))
+else:
+    st.info("Select an upcoming API-loaded match to load its players automatically.")
+
+st.subheader("🥅 Optional manual anytime-goalscorer estimate")
+st.warning("Manual model only. Enter participation and scoring assumptions yourself; predictions are not validated.")
 with st.expander("Enter a player and scoring assumptions", expanded=False):
     player = st.text_input("Player name (enter manually)", placeholder="Enter a player")
     side = st.radio("Team", [home_name, away_name], horizontal=True)
@@ -218,4 +302,4 @@ report = pd.DataFrame([{"competition": competition, "home": home_name, "away": a
                         "both_score": pred["btts"], "simulations": n,
                         "data_source": "football-data.org" if use_live else "manual"}])
 st.download_button("Download prediction CSV", report.to_csv(index=False).encode(), "soccer_prediction.csv", "text/csv")
-st.caption("Important: Experimental Poisson model, not trained AI or a proven betting edge. No real xG, injuries, official lineups, real corner or player data. Champions League ratings use ONLY available Champions League results, not verified cross-league calibrations. More simulations reduce sampling noise, not model error. API coverage varies; refresh happens on app activity.")
+st.caption("Important: Experimental Poisson model, not trained AI or a proven betting edge. No verified xG or injuries. Official lineup and player data only where API-Football provides it; otherwise not inferred. Champions League ratings use ONLY available Champions League results, not verified cross-league calibrations. More simulations reduce sampling noise, not model error. API coverage varies; refresh happens on app activity.")
