@@ -33,3 +33,14 @@ streamlit run app.py
 ### Limitations
 
 Available roster names may not be current or included in the free football-data.org plan. No official lineups, current player scoring stats, or verified corner data are implied. The simulator's result probabilities are experimental and not demonstrated to provide a betting edge.
+
+## Version 4.2: automated illustrative player scenarios
+
+When you load squad rosters, the app now shows a conditional anytime-scorer chance
+for each player with a recognizable position. This is **low-confidence and assumption-based**,
+not based on individual historical goals, minutes or player xG. Each player is assumed
+to play 75 minutes; players in the same positional group receive identical chances.
+Unknown positions have no estimate. **These are not betting odds.**
+
+The score model and existing free data integration are unchanged. The football-data.org
+API key stays in Streamlit Secrets. No API-Football paid subscription is required.

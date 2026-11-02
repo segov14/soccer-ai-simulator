@@ -9,6 +9,7 @@ import streamlit as st
 from model import expected_goals, simulate, rating_from_results
 from advanced import exact_markets, corner_markets, anytime_scorer, rolling_backtest
 from free_players import fetch_team_roster, RosterUnavailable
+from automatic_scorers import scorer_scenarios
 
 st.set_page_config(page_title="Soccer AI Simulator", page_icon="⚽", layout="wide")
 COMPETITIONS = {"La Liga": "PD", "Champions League": "CL", "Premier League": "PL"}
@@ -195,11 +196,19 @@ if selected_match:
                 roster = load_roster(tid, api_token)
                 if roster:
                     st.dataframe(pd.DataFrame(roster), hide_index=True, use_container_width=True)
+                    with st.expander(f"Illustrative scorer chances — {name} (role-only, LOW confidence)", expanded=True):
+                        st.warning("These are NOT statistical forecasts, betting odds, or verified player scoring rates. Each percentage is conditional on that player appearing for 75 minutes. We do not know which players will start or play. All players of the same listed position get the same baseline. Do not use these numbers as wagering advice.")
+                        team_goals = hxg if tid == selected_match['hid'] else axg
+                        scenario = scorer_scenarios(roster, team_goals)
+                        df_scenario = pd.DataFrame(scenario)
+                        df_scenario['Chance if playing'] = df_scenario['Chance if playing'].map(lambda v: f"{v:.1%}" if pd.notna(v) else "N/A")
+                        st.dataframe(df_scenario, hide_index=True, use_container_width=True)
+                        st.caption("Assumptions: a hypothetical 4-3-3-like team structure, position-level scoring-share weights, 75 minutes played, and team goals from this simulator. No player-specific goal history, actual xG, recent injuries, or confirmed lineup data. Goalkeeper, defender, midfielder and attacker category mappings are approximate.")
                 else:
                     st.info("No squad members were returned for this club. The free plan may not include this roster.")
             except RosterUnavailable as error:
                 st.info(str(error))
-        st.warning("Automatic goalscorer probabilities are disabled: verified current-season player goals, minutes, and official starting lineups are not available from this free-data setup. Use the optional manual estimate below if desired.")
+        st.info("Illustrative role-based chances are shown above where positions are available. Verified player-based goalscorer forecasts and confirmed lineups remain unavailable on this free-data setup.")
 else:
     st.info("Choose an upcoming match from the live fixtures to load its available team rosters.")
 
