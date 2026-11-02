@@ -1,4 +1,4 @@
-"""Soccer AI Simulator v4.5.1 — automatic verified season-results strength ratings."""
+"""Soccer AI Simulator V5 — real bookmaker prices and transparent model-based comparisons."""
 from datetime import datetime, timezone
 import os
 
@@ -10,6 +10,8 @@ from model import simulate
 from advanced import exact_markets
 from free_players import fetch_team_roster, RosterUnavailable
 from strength import COMPETITIONS as MODEL_COMPETITIONS, fit_strength, project_goals, compare_backtest
+from odds_data import (SPORT_KEYS, REGIONS, OddsUnavailable, odds_request, find_event,
+                       compare_event, calibration_table)
 from season_stats import (fetch_scorers, season_matches_only, team_totals_by_comp,
                           combine_player_rows, current_season_year, season_label,
                           StatsUnavailable, LEAGUES)
@@ -28,6 +30,21 @@ def get_token():
     except (FileNotFoundError, KeyError):
         secret = ""
     return str(secret or os.getenv("FOOTBALL_DATA_API_KEY", "")).strip()
+
+
+def get_odds_token():
+    """Never render or log the private odds provider token."""
+    try:
+        secret = st.secrets.get("ODDS_API_KEY", "")
+    except (FileNotFoundError, KeyError):
+        secret = ""
+    return str(secret or os.getenv("ODDS_API_KEY", "")).strip()
+
+
+@st.cache_data(ttl=21600, show_spinner=False)
+def load_market_odds(sport_key, secret_key, region, include_totals):
+    """6-hour shared cache to conserve the free provider's monthly credits."""
+    return odds_request(sport_key, secret_key, region, include_totals)
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -96,8 +113,8 @@ def readable_time(utc_string):
         return utc_string or "Date not announced"
 
 
-st.title("⚽ Soccer AI Simulator · V4.5.1")
-st.caption(f"La Liga · Champions League · Premier League | {SEASON_NAME} only · Automatic opponent-adjusted strengths from verified match results · Experimental predictions")
+st.title("⚽ Soccer AI Simulator · V5")
+st.caption(f"La Liga · Champions League · Premier League | {SEASON_NAME} only · Automatic strengths + 100,000 simulations + real bookmaker odds · Experimental probabilities")
 
 with st.sidebar:
     st.header("Automatic model")
@@ -108,6 +125,7 @@ with st.sidebar:
         load_optional_matches.clear()
         load_scorers.clear()
         load_roster.clear()
+        # Deliberately do not clear bookmaker-odds cache: refresh consumes quota.
         st.rerun()
 
 api_token = get_token()
@@ -203,6 +221,75 @@ with right:
     st.bar_chart(pd.DataFrame({'Probability': [exact['over_25'], exact['under_25'], exact['btts']]}, index=['Over 2.5', 'Under 2.5', 'Both score']))
 st.subheader("Most likely exact scores")
 st.dataframe(pd.DataFrame(pred['scores'], columns=['Score (home-away)', 'Probability']).style.format({'Probability': '{:.1%}'}), hide_index=True, use_container_width=True)
+
+st.divider()
+st.subheader("💹 V5 · Real bookmaker odds vs. model")
+st.caption("Odds source: [The Odds API](https://the-odds-api.com/) (recent bookmaker quotes); model source: football-data.org season match results. The model's probabilities are **NOT proven calibrated**. Rankings below show mathematical disagreements, not verified profitable bets or recommendations.")
+odds_token = get_odds_token()
+if not odds_token:
+    st.info("Add ODDS_API_KEY in Streamlit Secrets to enable bookmaker comparisons. Your match predictions continue working without it.")
+else:
+    region_ui, totals_ui = st.columns([1, 2])
+    with region_ui:
+        region_name = st.selectbox("Bookmaker region", list(REGIONS), index=0,
+                                   help="Only one region is queried at a time to conserve API credits.")
+    with totals_ui:
+        add_totals = st.checkbox("Also request Over/Under 2.5 odds", value=False,
+                                 help="May cost 1 additional credit each time odds are fetched. Soccer totals coverage depends on bookmaker.")
+    st.caption("The free Odds API quota is limited. A 1X2 request in one region normally costs 1 credit; adding totals can cost 1 more. Quotes are cached up to 6 hours, so they may be stale. Switches and manual refreshes can spend additional credits.")
+    if st.button("↻ Refresh bookmaker odds (uses API credits)", key="refresh_odds"):
+        load_market_odds.clear()
+        st.rerun()
+    try:
+        with st.spinner("Retrieving available bookmaker odds…"):
+            odds_result = load_market_odds(SPORT_KEYS[code], odds_token, REGIONS[region_name], add_totals)
+        quota = odds_result['quota']
+        quota_label = (f" · {quota['x-requests-remaining']} API credits remaining"
+                       if quota.get('x-requests-remaining') is not None else "")
+        st.caption(f"Last fetched from provider (UTC): {odds_result['retrieved_utc']}{quota_label}")
+        odds_match = find_event(odds_result['events'], home_name, away_name, selected['date_utc'])
+        if odds_match is None:
+            st.info("No confidently matched bookmaker odds for this exact fixture, region, and kickoff. An empty market is not a zero-probability event. Try another region or refresh near matchday.")
+        else:
+            st.write(f"**Matched market:** {odds_match.get('home_team')} vs. {odds_match.get('away_team')} · {readable_time(odds_match.get('commence_time'))}")
+            model_p = {'home_win': exact['home_win'], 'draw': exact['draw'],
+                       'away_win': exact['away_win'], 'over_25': exact['over_25'],
+                       'under_25': exact['under_25']}
+            quotes = compare_event(odds_match, model_p, odds_result['retrieved_utc'])
+            if not quotes:
+                st.info("This fixture has no complete full-time 1X2 market or available 2.5-goal total from this region. Two-outcome soccer moneylines are intentionally excluded.")
+            else:
+                weak = ('Limited' in projection['home_quality'] or 'Limited' in projection['away_quality']
+                        or 'Unavailable' in projection['home_quality'] or 'Unavailable' in projection['away_quality']
+                        or 'Very limited' in projection['home_quality'] or 'Very limited' in projection['away_quality'])
+                if weak:
+                    st.warning("At least one team has limited historical results. Model differences should not be interpreted as reliable betting value.")
+                st.caption("No-vig market probability normalizes each bookmaker's complete 1X2 (or Over/Under) prices separately. Model EV = (model probability × decimal odds − 1) × 100%. A positive number is **only a hypothetical model estimate**; it does not establish a real edge.")
+                quotes_df = pd.DataFrame(quotes)
+                cols = ['Market', 'Outcome', 'Bookmaker', 'Decimal odds', 'American odds',
+                        'Model probability', 'Raw implied probability', 'No-vig market probability',
+                        'Model-market edge (pp)', 'Model EV ROI (%)',
+                        'Odds last updated (UTC)']
+                display = quotes_df[cols].head(40).copy()
+                for key in ('Model probability', 'Raw implied probability', 'No-vig market probability'):
+                    display[key] = display[key].map(lambda v: f'{v:.1%}')
+                for key in ('Model-market edge (pp)', 'Model EV ROI (%)'):
+                    display[key] = display[key].map(lambda v: f'{v:+.1f}')
+                display['Decimal odds'] = display['Decimal odds'].map(lambda v: f'{v:.2f}')
+                st.dataframe(display, hide_index=True, use_container_width=True)
+                st.caption("Sorted by estimated model EV, not reliability. These are not verified profitable opportunities. Prices can change or be unavailable to you; no betting is performed.")
+                prediction_csv = quotes_df.copy()
+                prediction_csv['Match'] = f"{home_name} vs {away_name}"
+                prediction_csv['Competition'] = competition
+                prediction_csv['Season'] = SEASON_NAME
+                prediction_csv['Home quality'] = projection['home_quality']
+                prediction_csv['Away quality'] = projection['away_quality']
+                st.download_button("Download bookmaker/model comparison CSV (one snapshot)",
+                                   prediction_csv.to_csv(index=False).encode('utf-8'),
+                                   f"v5_odds_snapshot_{SEASON_YEAR}.csv", "text/csv")
+                st.caption("CSV snapshots must be saved by you; Streamlit does not maintain a permanent betting-results log across redeployments.")
+    except OddsUnavailable as exc:
+        st.warning(f"Bookmaker odds unavailable: {exc} Other predictions are unaffected.")
 
 st.divider()
 st.subheader('🚩 Corners — automatic data not available')
@@ -319,6 +406,13 @@ if len(finished) >= 25:
             st.dataframe(df, hide_index=True, use_container_width=True)
             st.download_button("Download comparable backtest CSV", df.to_csv(index=False).encode(), 'v45_backtest.csv', 'text/csv')
             st.caption("Lower loss is better. New model may perform worse. Neither model is proven calibrated; only earlier-dated matches were used to predict each fixture.")
+            reliability = calibration_table(backtest)
+            if reliability:
+                st.markdown("**V5 reliability diagnostic — preliminary, not a fitted calibration curve**")
+                bins_df = pd.DataFrame(reliability)
+                st.dataframe(bins_df.style.format({'Mean predicted': '{:.1%}', 'Observed frequency': '{:.1%}'}),
+                             hide_index=True, use_container_width=True)
+                st.caption("Observed frequencies are based only on recent held-out match outcomes; each match contributes home/draw/away observations. Sample sizes are usually too small for dependable calibration. No calibration adjustment is applied to odds comparisons.")
         else:
             st.info("Not enough earlier match results to compare models without future-data leakage.")
 else:
@@ -330,4 +424,4 @@ report = pd.DataFrame([{"competition": competition, "home": home_name, "away": a
                         "both_score": exact["btts"], "simulations": n,
                         "data_source": "football-data.org season results", "season": SEASON_NAME}])
 st.download_button("Download prediction CSV", report.to_csv(index=False).encode(), "soccer_prediction.csv", "text/csv")
-st.caption(f"Important: {SEASON_NAME} only. Strength ratings use official provider-reported match scores and regularized opponent-adjusted Poisson estimates, not measured xG. Cross-league comparisons are connected through UEFA matches where available, but not externally calibrated. Player statistics are partial scorer-feed totals; scorer probabilities are experimental and do not account for confirmed lineups, injuries, minutes or shots. Corners are unavailable without verified data. Backtest comparisons, not simulated counts, indicate prediction performance. Refresh requires app activity.")
+st.caption(f"Important: {SEASON_NAME} only. Real prices from The Odds API; bookmaker odds and model outcomes are compared but the prediction model is not validated or calibrated. Strength ratings use official provider-reported match scores and regularized opponent-adjusted Poisson estimates, not measured xG. Cross-league comparisons are connected through UEFA matches where available, but not externally calibrated. Player statistics are partial scorer-feed totals; scorer probabilities are experimental and do not account for confirmed lineups, injuries, minutes or shots. Corners are unavailable without verified data. Backtest comparisons, not simulated counts, indicate prediction performance. Refresh requires app activity.")

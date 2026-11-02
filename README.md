@@ -1,56 +1,50 @@
-# ⚽ Soccer AI Simulator V4.5.1 — automatic season-based strength model
+# ⚽ Soccer AI Simulator — Version 5 (Bookmaker Odds + Value Analysis)
 
-La Liga, Premier League and UEFA Champions League Streamlit soccer simulator.
+A Streamlit web app for **La Liga, the UEFA Champions League and Premier League**. This release builds on V4.5.1 (fixed **100,000** simulated scorelines, automatically fitted current-season team strengths, published player stats and rolling backtests). It adds real bookmaker prices from [The Odds API](https://the-odds-api.com/) for comparing model estimates with the market.
 
-**V4.5.1 change:** The simulation count is fixed at **100,000** rather than 25,000; model predictions and data sources are otherwise unchanged.
+## New in V5
 
-**Major change:** No manual strength, home-advantage, baseline-goal, corner, or individual-scorer sliders. Choose a real scheduled fixture: the app loads this season's published match scores and generates goal and result estimates automatically. It uses **only the 2026–27 season** as of November 2026; the year updates each July.
+1. **Automatic bookmaker odds:** The app retrieves available prices for the selected competition and bookmaker region. Default: US region; 90-minute **three-way 1X2** markets only (home, draw, away). Optionally request **Over/Under 2.5** prices when supplied by sportsbooks. **Prices are not invented when absent.**
+2. **Safe fixture matching:** It matches both teams and approximate kickoff time against the football-data.org fixture. Ambiguous matches, missing draw odds and wrong markets are not compared.
+3. **No-vig probabilities:** Each bookmaker's complete 3-way market is normalized separately. Comparison includes raw implied chance, no-vig chance, our model probability, and their difference in percentage points.
+4. **Hypothetical expected value (EV):** The app calculates `100 × (model_probability × decimal_odds − 1)` (percent ROI). The estimated return on a $100 hypothetical stake is the **same numeric amount in dollars**. These are **only consequences of the model's assumed probabilities**, not validated winning edges or recommendations.
+5. **Quote auditability:** Show the bookmaker name, decimal and American quotes, sportsbook update time, retrieval timestamp, and API credits remaining when supplied. Download a timestamped CSV snapshot for recordkeeping.
+6. **Basic reliability diagnostic:** The old V4.4 vs V4.5 rolling backtest now also displays a preliminary five-bin probability-vs-result table. This is **NOT a calibrated forecast**, and V5 does *not* apply any calibration adjustments without sufficient prospective evidence.
+7. **Free-tier conservation:** API results are cached for up to **six hours**. Refreshing odds manually or switching region/market can consume more credits. The free Odds API plan is currently listed as 500 credits/month; check your provider dashboard. Changing a soccer data cache does **not** automatically clear the odds cache.
 
-## How it works
+## Install into your existing GitHub + Streamlit app
 
-- Match results come from the season-filtered **football-data.org v4 API** (`/competitions/{code}/matches?season=2026`); the app does not invent scores or team histories.
-- On opening a match the app requests, if available, the **Champions League, La Liga, Premier League, Bundesliga, Serie A and Ligue 1**. Six endpoint requests or fewer are needed on an initial launch. Results are cached for 30 minutes. If optional competitions are unavailable their failures are temporarily cached, and the model explains reduced coverage. Click Refresh in the sidebar to clear data caches.
-- The automatic team strength model uses a **regularized opponent-adjusted Poisson goal model** fitted to reported match scores. It learns each team's attack and goals-conceded strength jointly, from **both its domestic and UCL matches**, connecting leagues through clubs playing across competitions.
-- More recent matches get greater weight (75-day half-life). Small samples are shrunk toward an explicit league-average prior. The scoring baseline for each competition and aggregate home advantage are learned from the available season results with shrinkage.
-- **A Greek-league-only club's Greek domestic games cannot be included** because the Greek Super League is not among the free covered leagues used here. For such clubs the model uses European match results and conservative priors, displays a reduced-data warning, and does **not** pretend to know a verified cross-league ranking. Portuguese/Dutch league results are not included in this six-feed default, to leave rate-limit headroom.
-- The displayed "projected goals" are **model expectations based on past goals, NOT verified match xG**. Independent Poisson probabilities give home win/draw/away win and goal markets; 100,000 simulations supply scoreline frequencies automatically. No evidence of reliable gambling profits or superior accuracy is claimed.
-- There is a **side-by-side historical backtest** for V4.4 and V4.5 on the *same* matches, with Brier and log loss computed using only fixtures from earlier calendar days (no same-day or future-data leakage). The new model could perform worse; inspect its scores before trusting it. Tests are within season and are *not* equivalent to third-party validation.
-- Existing current-season partial player/scorer panels are kept. Click **Load rosters + this-season player statistics** for the free API's supported published goals/assists/penalty data. The scorer feed is a top-scorers list, not full minute/shots/xG/lineup information. Player goalscorer estimates are experimental.
-- **Corners are not predicted** until an appropriate season corner-statistics provider is available; manual corners/sliders are removed rather than giving fabricated automatic numbers.
-
-### Automatic sources and coverage
-
-- Football-data.org API docs: https://www.football-data.org/documentation/quickstart
-- Published free competition coverage: https://www.football-data.org/coverage
-- Match resources and `season` filtering: https://docs.football-data.org/general/v4/competition.html
-
-Football-data.org is a third-party data provider, not the actual competition governing body. The app does **not independently cross-verify** every score with an official league report. It doesn't scrape copyrighted or paywalled player xG/shot data.
-
-## Update your existing Streamlit website
-
-1. Unzip `soccer_ai_simulator_v4_5_1.zip` on your computer.
-2. In your existing public GitHub repository `segov14/soccer-ai-simulator`, select **Add file → Upload files**, and upload **all project files from inside the extracted folder**, not the ZIP or a top-level wrapper folder. Overwrite the older versions and **Commit changes**.
-3. Streamlit Community Cloud should automatically redeploy the existing app. Keep `app.py` in the repository root.
-4. Your existing private Streamlit Secrets entry must contain:
+1. Download and extract the V5 ZIP archive.
+2. In your repository `segov14/soccer-ai-simulator`, choose **Add file → Upload files**. Drag **the extracted files themselves**, including `app.py` and the new `odds_data.py`, into the **repository root**, not the ZIP or a wrapper folder. Commit the files, replacing older versions.
+3. Your existing Streamlit deployment should redeploy from `main` → `app.py` after GitHub updates.
+4. In [Streamlit Community Cloud](https://share.streamlit.io/), open the app's **Settings → Secrets** and keep your two private keys in valid TOML form:
 
 ```toml
-FOOTBALL_DATA_API_KEY = "your_key_here"
+FOOTBALL_DATA_API_KEY = "your_football_data_org_key"
+ODDS_API_KEY = "your_the_odds_api_key"
 ```
 
-5. **Never** upload the real key to GitHub or send it in chat. `API_FOOTBALL_KEY` is not needed for this version.
-6. Select a competition, then a scheduled match. The model calculates the strengths and probabilities automatically. Optional data feeds may be unavailable on your plan or occasionally hit football-data.org's free rate limit of 10 requests/minute.
+**Never** paste real API keys in GitHub or chat. `API_FOOTBALL_KEY` is not used in this release.
 
-## Tests
+5. Open your app, choose an upcoming fixture and inspect the **V5 Real bookmaker odds vs model** panel. US, Europe and UK are **alternative regions**; each may offer different or no prices. **By default h2h only** costs 1 credit per refresh per region; adding totals may cost another. The actual credits used/remaining are returned by the provider.
+6. If a match has no bookmakers, see the availability note. Odds are usually published closer to kickoff and aren't guaranteed in a particular region. Prices may change between refreshes. If quota is exhausted, wait for the provider reset or adjust usage; other soccer predictions can still work.
 
-Run locally:
+## Sources & model limitations
 
-```sh
+- **Match results, season-roster data, and season scorer feeds:** [football-data.org](https://www.football-data.org/documentation/quickstart). Fitted team strengths come only from available **current-season** results across CL, PD, PL, BL1, SA and FL1. The model is a regularized opponent-adjusted Poisson model fitted to match scores. 'Projected goals' are **not measured xG**. Champions League clubs whose domestic-league data is missing are flagged as less certain.
+- **Bookmaker odds:** [The Odds API v4](https://the-odds-api.com/liveapi/guides/v4/) using `soccer_spain_la_liga`, `soccer_uefa_champs_league` and `soccer_epl`. Real moneyline market requires three outcomes. The Odds API includes timestamps and remaining quotas when available.
+- **No betting is executed:** The app does not know your state's sportsbook eligibility, whether you can place the displayed quote, limits, transaction costs, or whether a stale quote is still available.
+- **Uncalibrated forecasts:** More Monte Carlo simulations only reduce simulation noise. Neither the scores model nor its apparent edges are proven calibrated. To determine real predictive or betting value, save *pre-match* odds/probability snapshots over many games, then assess out-of-sample log loss, Brier score, calibration, and realized results before any claims of profitability.
+- **No permanent prediction history:** Streamlit Community Cloud's runtime isn't a durable database. CSV snapshots can be downloaded manually. A proper prediction-logging database and automated post-match settlement are a later upgrade.
+- **Unavailable advanced data:** Current free feeds do not guarantee live injuries, lineups, player xG, minutes or corner statistics. Experimental player probabilities are estimates from partial top-scorer feeds. Corners remain disabled until quality-assured data is available.
+
+## Run and test locally
+
+```bash
 python -m pip install -r requirements.txt
 python -m pip install pytest
 python -m pytest -q
 python -m streamlit run app.py
 ```
 
-The supplied build passed **36 automated tests**, compiled as valid Python, and verified the downloaded ZIP's files. The full Streamlit app launch was not tested in the build environment (Streamlit package unavailable and network access blocked), and the private API key was not used for a live connection. After deployment, please verify both fixture predictions and player results.
-
-**Interpretation:** The new method is a research prototype, not trained on a sufficiently broad, independent evaluation dataset to be called accurate or reliable for placing bets. Use the app's Brier/log-loss comparison to determine whether predictions improve before treating them as credible.
+Live provider calls cannot be tested without your secret keys; the included tests use synthetic sample responses and do **not** imply that bookmakers will return odds for every match or that model edges are accurate.
