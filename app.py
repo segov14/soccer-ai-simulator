@@ -1,4 +1,4 @@
-"""Soccer Simulation Lab v2 — auto-loaded fixtures and results."""
+"""Soccer Simulation Lab v3 — auto-loaded fixtures and results."""
 from datetime import datetime, timezone
 import os
 
@@ -7,6 +7,7 @@ import requests
 import streamlit as st
 
 from model import expected_goals, simulate, rating_from_results
+from advanced import exact_markets, corner_markets, anytime_scorer, rolling_backtest
 
 st.set_page_config(page_title="Soccer AI Simulator", page_icon="⚽", layout="wide")
 COMPETITIONS = {"La Liga": "PD", "Champions League": "CL", "Premier League": "PL"}
@@ -67,7 +68,7 @@ def readable_time(utc_string):
         return utc_string or "Date not announced"
 
 
-st.title("⚽ Soccer AI Simulator")
+st.title("⚽ Soccer AI Simulator · V3")
 st.caption("La Liga · Champions League · Premier League | Automatically updated match data • Experimental probabilities")
 
 with st.sidebar:
@@ -139,10 +140,12 @@ adv = c2.slider("Home advantage multiplier", 1.0, 1.4, 1.12, 0.01, disabled=neut
 
 hxg, axg = expected_goals(ha, hd, aa, ad, base, adv, neutral)
 pred = simulate(hxg, axg, n=n, seed=int(seed))
+exact = exact_markets(hxg, axg)
 a, b, c = st.columns(3)
-a.metric(f"{home_name} win", f"{pred['home_win']:.1%}")
-b.metric("Draw", f"{pred['draw']:.1%}")
-c.metric(f"{away_name} win", f"{pred['away_win']:.1%}")
+a.metric(f"{home_name} win", f"{exact['home_win']:.1%}")
+b.metric("Draw", f"{exact['draw']:.1%}")
+c.metric(f"{away_name} win", f"{exact['away_win']:.1%}")
+st.caption("Win/draw/loss uses exact Poisson probabilities, avoiding Monte Carlo sampling noise. Simulated scorelines remain below.")
 st.caption(f"Projected goals: {home_name} {hxg:.2f} · {away_name} {axg:.2f} | {n:,} simulated games")
 
 left, right = st.columns(2)
@@ -156,10 +159,63 @@ with right:
 st.subheader("Most likely exact scores")
 st.dataframe(pd.DataFrame(pred["scores"], columns=["Score (home-away)", "Probability"]).style.format({"Probability": "{:.1%}"}), hide_index=True, use_container_width=True)
 
+
+st.divider()
+st.subheader("📊 Corners — assumption-based model")
+st.warning("football-data.org does not supply verified corner averages through this app. Values below are MANUAL assumptions, not automatically calculated match predictions. Change them using a reliable source.")
+with st.expander("Enter corner averages and estimate over/under lines", expanded=False):
+    ca, cb = st.columns(2)
+    hc = ca.number_input(f"{home_name} expected corners (your estimate)", 0.0, 20.0, 5.0, 0.1)
+    ac = cb.number_input(f"{away_name} expected corners (your estimate)", 0.0, 20.0, 4.5, 0.1)
+    if st.button("Calculate corner estimates"):
+        cr = corner_markets(hc, ac)
+        st.metric("Expected total corners", f"{cr['expected_total']:.1f}")
+        st.dataframe(pd.DataFrame([{"Line": line, "Chance": cr[key]} for line, key in
+            [("Over 7.5", "over_75"), ("Over 8.5", "over_85"), ("Over 9.5", "over_95"), ("Over 10.5", "over_105")]]).style.format({"Chance":"{:.1%}"}), hide_index=True)
+        st.caption("Simple independent Poisson corner model. Not validated against corner statistics.")
+
+st.subheader("🥅 Anytime goalscorer — assumption-based model")
+st.warning("This app does not receive confirmed lineups, injury reports or player goal shares. These player probabilities require your own inputs; no actual players or starters are invented.")
+with st.expander("Enter a player and scoring assumptions", expanded=False):
+    player = st.text_input("Player name (enter manually)", placeholder="Enter a player")
+    side = st.radio("Team", [home_name, away_name], horizontal=True)
+    share = st.slider("Assumed share of team goals", 0.0, 1.0, 0.25, 0.01)
+    minutes = st.slider("Expected minutes if playing", 0, 120, 80, 5)
+    start_prob = st.slider("Probability player participates (1.0 if confirmed)", 0.0, 1.0, 0.8, 0.05)
+    st.caption("Before lineups: enter your estimated participation probability. After confirmation: set to 100% if playing; adjust minutes as appropriate.")
+    if st.button("Calculate player chance"):
+        if not player.strip():
+            st.error("Enter a player name first.")
+        else:
+            team_goals = hxg if side == home_name else axg
+            scorer_prob = anytime_scorer(team_goals, share, minutes, start_prob)
+            st.metric(f"{player.strip()} — anytime scorer estimate", f"{scorer_prob:.1%}")
+            st.caption("Conditional model using assumed goal-share, playing time and participation. Not a validated player forecast.")
+
+if use_live and len(finished) >= 25:
+    st.divider()
+    st.subheader("🧪 Historical rolling backtest")
+    st.caption("Each result is predicted using only PRIOR days in the current API-returned competition data. This is a small, within-season test and cannot validate cross-league adjustments.")
+    if st.button("Run historical backtest"):
+        backtest = rolling_backtest(finished)
+        if backtest:
+            df = pd.DataFrame(backtest)
+            c1, c2 = st.columns(2)
+            c1.metric("Matches tested", len(df))
+            c2.metric("Mean Brier score (lower is better)", f"{df['brier'].mean():.3f}")
+            st.metric("Mean log loss (lower is better)", f"{df['log_loss'].mean():.3f}")
+            st.dataframe(df, hide_index=True, use_container_width=True)
+            st.download_button("Download backtest CSV", df.to_csv(index=False).encode(), "backtest.csv", "text/csv")
+            st.caption("These are diagnostic scores, not claims of predictive accuracy. More seasons and independent holdouts are needed.")
+        else:
+            st.info("Not enough prior matches with three games per team to run a leak-free backtest.")
+else:
+    st.caption("Historical backtest available when a competition has at least 25 completed API fixtures.")
+
 report = pd.DataFrame([{"competition": competition, "home": home_name, "away": away_name,
-                        "projected_home_goals": hxg, "projected_away_goals": axg, "home_win": pred["home_win"],
-                        "draw": pred["draw"], "away_win": pred["away_win"], "over_2_5": pred["over_25"],
+                        "projected_home_goals": hxg, "projected_away_goals": axg, "home_win": exact["home_win"],
+                        "draw": exact["draw"], "away_win": exact["away_win"], "over_2_5": pred["over_25"],
                         "both_score": pred["btts"], "simulations": n,
                         "data_source": "football-data.org" if use_live else "manual"}])
 st.download_button("Download prediction CSV", report.to_csv(index=False).encode(), "soccer_prediction.csv", "text/csv")
-st.caption("Important: This is a simple Poisson simulation, NOT a machine-learning AI or a proven betting edge. No injuries, starting lineups, real xG, odds, or historical backtesting. More simulations reduce Monte Carlo noise, not model error. The API may limit competitions, future schedules and available results. Data refresh occurs on app activity, not continuously when nobody visits.")
+st.caption("Important: Experimental Poisson model, not trained AI or a proven betting edge. No real xG, injuries, official lineups, real corner or player data. Champions League ratings use ONLY available Champions League results, not verified cross-league calibrations. More simulations reduce sampling noise, not model error. API coverage varies; refresh happens on app activity.")
