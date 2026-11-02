@@ -1,62 +1,54 @@
-# ⚽ Soccer AI Simulator V4.4 — 2026/27 verified-season scorer data
+# ⚽ Soccer AI Simulator V4.5 — automatic season-based strength model
 
-Streamlit app for La Liga, Champions League and Premier League. Version 4.4 replaces equal-by-position automatic player percentages with **individual, current-season, provider-reported** goals and scorer estimates.
+La Liga, Premier League and UEFA Champions League Streamlit soccer simulator.
 
-## What's new
+**Major change:** No manual strength, home-advantage, baseline-goal, corner, or individual-scorer sliders. Choose a real scheduled fixture: the app loads this season's published match scores and generates goal and result estimates automatically. It uses **only the 2026–27 season** as of November 2026; the year updates each July.
 
-- Loads football-data.org **2026/27 season** scorer feeds for `PD`, `PL`, and `CL` using `GET /v4/competitions/{code}/scorers?season=2026&limit=200` (tries smaller limits if unsupported).
-- Matches scorers to each current roster by **player ID** (falls back to unique full name only if roster has no ID).
-- Displays **this-season reported goals, assists, penalties, combined goal involvements, team games, team goals, scoring share and the competitions for which stats were available**. Assists and penalties appear unavailable when data is incomplete.
-- Calculates *experimental* anytime-scorer estimates separately for players with available scorer records and sufficient team results. Two forwards with different individual goal records can now have different percentages.
-- Includes a published-scorers season overview for all three competitions and downloadable CSVs.
-- Current-season API requests and kickoff-date filtering guard against accidentally mixing older seasons.
-- Preserves match predictions, corners' manually supplied assumptions, and historical backtesting.
-- Caches scorer results for 1 hour, matches for 30 minutes, rosters for 24 hours; refresh happens when users use the app.
-- Gracefully explains missing scorer data from the free API rather than inventing player records.
+## How it works
 
-## How player chances are estimated
+- Match results come from the season-filtered **football-data.org v4 API** (`/competitions/{code}/matches?season=2026`); the app does not invent scores or team histories.
+- On opening a match the app requests, if available, the **Champions League, La Liga, Premier League, Bundesliga, Serie A and Ligue 1**. Six endpoint requests or fewer are needed on an initial launch. Results are cached for 30 minutes. If optional competitions are unavailable their failures are temporarily cached, and the model explains reduced coverage. Click Refresh in the sidebar to clear data caches.
+- The automatic team strength model uses a **regularized opponent-adjusted Poisson goal model** fitted to reported match scores. It learns each team's attack and goals-conceded strength jointly, from **both its domestic and UCL matches**, connecting leagues through clubs playing across competitions.
+- More recent matches get greater weight (75-day half-life). Small samples are shrunk toward an explicit league-average prior. The scoring baseline for each competition and aggregate home advantage are learned from the available season results with shrinkage.
+- **A Greek-league-only club's Greek domestic games cannot be included** because the Greek Super League is not among the free covered leagues used here. For such clubs the model uses European match results and conservative priors, displays a reduced-data warning, and does **not** pretend to know a verified cross-league ranking. Portuguese/Dutch league results are not included in this six-feed default, to leave rate-limit headroom.
+- The displayed "projected goals" are **model expectations based on past goals, NOT verified match xG**. Independent Poisson probabilities give home win/draw/away win and goal markets; 25,000 simulations supply scoreline frequencies automatically. No evidence of reliable gambling profits or superior accuracy is claimed.
+- There is a **side-by-side historical backtest** for V4.4 and V4.5 on the *same* matches, with Brier and log loss computed using only fixtures from earlier calendar days (no same-day or future-data leakage). The new model could perform worse; inspect its scores before trusting it. Tests are within season and are *not* equivalent to third-party validation.
+- Existing current-season partial player/scorer panels are kept. Click **Load rosters + this-season player statistics** for the free API's supported published goals/assists/penalty data. The scorer feed is a top-scorers list, not full minute/shots/xG/lineup information. Player goalscorer estimates are experimental.
+- **Corners are not predicted** until an appropriate season corner-statistics provider is available; manual corners/sliders are removed rather than giving fabricated automatic numbers.
 
-For players with official provider scorer entries and team goals for **the same** competition(s):
+### Automatic sources and coverage
 
-- `share = player's published 2026/27 goals / club's completed-match goals in those published competitions`
-- `lambda_player = projected_team_goals_in_selected_match × share`
-- `P(player scores ≥ 1) = 1 − exp(−lambda_player)`
+- Football-data.org API docs: https://www.football-data.org/documentation/quickstart
+- Published free competition coverage: https://www.football-data.org/coverage
+- Match resources and `season` filtering: https://docs.football-data.org/general/v4/competition.html
 
-This is **an extrapolation**, not a validated player-level betting prediction. It does **not** control for starts, playing time, injuries, transfer effects, goals penalties, opponents faced, xG, shots, or whether the published top-scorer list was truncated. It assumes the published goal share will continue. Probabilities for players *not* in the published scorer feed display **No verified player scoring data**, not zero. If the club's current-season results can't be retrieved, no percentage is computed. Season changes automatically in July.
+Football-data.org is a third-party data provider, not the actual competition governing body. The app does **not independently cross-verify** every score with an official league report. It doesn't scrape copyrighted or paywalled player xG/shot data.
 
-**Critical data limitation:** football-data.org's scorer feed supplies published goals, assists and penalty totals for listed top scorers — not a full squad-by-squad player statistics API. We cannot automatically provide all players' shots on target, minutes, xG, or confirmed lineups from the user's current free API subscriptions. Missing fields are unavailable, never invented. Access to the scorer feed may depend on the football-data.org plan. API-Football free plan's current-season access is not used.
+## Update your existing Streamlit website
 
-## Deployment (existing GitHub + Streamlit app)
-
-1. Extract `soccer_ai_simulator_v4_4.zip` on your PC.
-2. Go to your GitHub repository `segov14/soccer-ai-simulator` → **Add file** → **Upload files**.
-3. Upload the **individual files inside** the extracted ZIP to the repo root; replace existing files and **Commit changes**.
-4. Your existing Streamlit Cloud app should redeploy automatically at its current `.streamlit.app` address.
-5. The **only required** secret in Streamlit Cloud Settings → Secrets is:
+1. Unzip `soccer_ai_simulator_v4_5.zip` on your computer.
+2. In your existing public GitHub repository `segov14/soccer-ai-simulator`, select **Add file → Upload files**, and upload **all project files from inside the extracted folder**, not the ZIP or a top-level wrapper folder. Overwrite the older versions and **Commit changes**.
+3. Streamlit Community Cloud should automatically redeploy the existing app. Keep `app.py` in the repository root.
+4. Your existing private Streamlit Secrets entry must contain:
 
 ```toml
-FOOTBALL_DATA_API_KEY = "your_private_football_data_org_token"
+FOOTBALL_DATA_API_KEY = "your_key_here"
 ```
 
-Keep the real key in Streamlit Cloud Secrets, **not** GitHub. `API_FOOTBALL_KEY` can stay in secrets but is not used by this version. Streamlit needs access to the original `app.py` at repository root.
+5. **Never** upload the real key to GitHub or send it in chat. `API_FOOTBALL_KEY` is not needed for this version.
+6. Select a competition, then a scheduled match. The model calculates the strengths and probabilities automatically. Optional data feeds may be unavailable on your plan or occasionally hit football-data.org's free rate limit of 10 requests/minute.
 
-Select an upcoming match and press **Load rosters + this-season player statistics**. The app may use several API calls on the first click; it is optimized for the free provider limit of 10 requests per minute, but other users/actions might cause a temporary 429. If so, wait and retry.
+## Tests
 
-## Testing
+Run locally:
 
-```bash
+```sh
 python -m pip install -r requirements.txt
 python -m pip install pytest
 python -m pytest -q
 python -m streamlit run app.py
 ```
 
-In the development environment, **29 automated tests passed**, and Python syntax compiled. The Streamlit package was unavailable in the development runtime, so the complete UI couldn't be launched there. Live provider API calls require your private key and remain unverified until deployment. Tested code only; no guarantee of predictive accuracy or profitable bets.
+The supplied build passed **36 automated tests**, compiled as valid Python, and verified the downloaded ZIP's files. The full Streamlit app launch was not tested in the build environment (Streamlit package unavailable and network access blocked), and the private API key was not used for a live connection. After deployment, please verify both fixture predictions and player results.
 
-## Sources / API documentation
-
-- https://www.football-data.org/documentation/quickstart
-- https://docs.football-data.org/general/v4/competition.html
-- https://docs.football-data.org/general/v4/team.html
-
-The displayed match results, club rosters and scorer totals are obtained from football-data.org. That is a recognized third-party sports data provider; this program does not independently audit each event against league match reports. It does not scrape sites such as FBref or Opta, nor bypass paywalls.
+**Interpretation:** The new method is a research prototype, not trained on a sufficiently broad, independent evaluation dataset to be called accurate or reliable for placing bets. Use the app's Brier/log-loss comparison to determine whether predictions improve before treating them as credible.

@@ -1,4 +1,4 @@
-"""Soccer Simulation Lab v3 — auto-loaded fixtures and results."""
+"""Soccer AI Simulator v4.5 — automatic verified season-results strength ratings."""
 from datetime import datetime, timezone
 import os
 
@@ -6,9 +6,10 @@ import pandas as pd
 import requests
 import streamlit as st
 
-from model import expected_goals, simulate, rating_from_results
-from advanced import exact_markets, corner_markets, anytime_scorer, rolling_backtest
+from model import simulate
+from advanced import exact_markets
 from free_players import fetch_team_roster, RosterUnavailable
+from strength import COMPETITIONS as MODEL_COMPETITIONS, fit_strength, project_goals, compare_backtest
 from season_stats import (fetch_scorers, season_matches_only, team_totals_by_comp,
                           combine_player_rows, current_season_year, season_label,
                           StatsUnavailable, LEAGUES)
@@ -58,7 +59,7 @@ def load_matches(competition_code: str, api_token: str, season_year: int):
         if not hname or not aname or h.get("id") is None or a.get("id") is None:
             continue  # excludes TBD knockout participants
         item = {"home": hname, "away": aname, "hid": h["id"], "aid": a["id"],
-                "date_utc": m.get("utcDate", ""), "id": m.get("id")}
+                "date_utc": m.get("utcDate", ""), "id": m.get("id"), "stage": m.get("stage") or ""}
         score = (m.get("score") or {}).get("fullTime") or {}
         if m.get("status") == "FINISHED" and isinstance(score.get("home"), int) and isinstance(score.get("away"), int):
             finished.append({**item, "hg": score["home"], "ag": score["away"]})
@@ -78,6 +79,16 @@ def load_scorers(code, api_token, season_year):
     return fetch_scorers(code, api_token, season_year)
 
 
+@st.cache_data(ttl=120, show_spinner=False)
+def load_optional_matches(competition_code, api_token, season_year):
+    """Prevent repeated requests to unavailable competitions on each rerun."""
+    try:
+        results, _ = load_matches(competition_code, api_token, season_year)
+        return results, None
+    except ValueError as exc:
+        return None, str(exc)
+
+
 def readable_time(utc_string):
     try:
         return datetime.fromisoformat(utc_string.replace("Z", "+00:00")).astimezone().strftime("%b %d, %Y · %I:%M %p %Z")
@@ -85,118 +96,122 @@ def readable_time(utc_string):
         return utc_string or "Date not announced"
 
 
-st.title("⚽ Soccer AI Simulator · V4.4")
-st.caption(f"La Liga · Champions League · Premier League | {SEASON_NAME} ONLY · Verified provider-reported goal totals · Experimental predictions")
+st.title("⚽ Soccer AI Simulator · V4.5")
+st.caption(f"La Liga · Champions League · Premier League | {SEASON_NAME} only · Automatic opponent-adjusted strengths from verified match results · Experimental predictions")
 
 with st.sidebar:
-    st.header("Settings")
+    st.header("Automatic model")
     competition = st.selectbox("Competition", list(COMPETITIONS))
-    n = st.select_slider("Monte Carlo simulations", [1000, 5000, 10000, 25000, 50000, 100000], value=25000)
-    seed = st.number_input("Random seed", min_value=0, max_value=1000000, value=42)
-    neutral = st.checkbox("Neutral venue", value=False)
-    manual = st.toggle("Manual / offline mode", value=False,
-                       help="Use your own team names and strength ratings without the API.")
-    if st.button("↻ Refresh soccer data"):
+    st.caption("Team strengths, venue effects, scoring averages and the 25,000 simulation count are automatic. There are no manual strength sliders.")
+    if st.button("↻ Refresh verified soccer data"):
         load_matches.clear()
+        load_optional_matches.clear()
         load_scorers.clear()
         load_roster.clear()
         st.rerun()
 
-finished, upcoming, ratings = [], [], {}
-base_goals = 1.35
 api_token = get_token()
-use_live = bool(api_token) and not manual
+if not api_token:
+    st.error("Configure FOOTBALL_DATA_API_KEY in Streamlit Secrets to load automatic predictions. No manual placeholder ratings are used.")
+    st.stop()
 
-if not api_token and not manual:
-    st.warning("No API secret configured. Add FOOTBALL_DATA_API_KEY to your Streamlit deployment's Secrets, or enable Manual / offline mode.")
-elif use_live:
-    try:
-        with st.spinner("Loading the latest competition results and fixtures…"):
-            finished, upcoming = load_matches(COMPETITIONS[competition], api_token, SEASON_YEAR)
-        # Build ratings using the same team IDs, not potentially inconsistent names.
-        rating_matches = [{"home": str(m["hid"]), "away": str(m["aid"]), "hg": m["hg"], "ag": m["ag"]} for m in finished]
-        ratings, base_goals = rating_from_results(rating_matches)
-        st.success(f"Auto-data connected · {SEASON_NAME} season · {len(finished)} completed matches · {len(upcoming)} upcoming matches · refreshed approximately every 30 minutes")
-    except ValueError as exc:
-        st.error(str(exc))
-        st.info("You can still use Manual / offline mode in the sidebar.")
-        use_live = False
+code = COMPETITIONS[competition]
+try:
+    with st.spinner("Fetching current-season verified fixtures and results…"):
+        finished, upcoming = load_matches(code, api_token, SEASON_YEAR)
+except ValueError as exc:
+    st.error(str(exc))
+    st.stop()
 
-if use_live and upcoming:
-    labels = [f"{readable_time(f['date_utc'])} — {f['home']} vs {f['away']}" for f in upcoming]
-    ix = st.selectbox("Choose an upcoming match", range(len(upcoming)), format_func=lambda i: labels[i])
-    selected = upcoming[ix]
-    home_name, away_name = selected["home"], selected["away"]
-    home_key, away_key = str(selected["hid"]), str(selected["aid"])
-else:
-    if use_live and not upcoming:
-        st.info("No upcoming fixtures were returned for this competition. You can enter a matchup manually below.")
-    c1, c2 = st.columns(2)
-    with c1:
-        home_name = st.text_input("Home team", value="Real Madrid")
-    with c2:
-        away_name = st.text_input("Away team", value="Barcelona")
-    home_key, away_key = None, None
+if not upcoming:
+    st.info("No upcoming scheduled fixtures are available for this competition. The app does not substitute invented matchups.")
+    st.stop()
 
-fallback = {"attack": 1.0, "defense": 1.0, "games": 0}
-hr = ratings.get(home_key, fallback)
-ar = ratings.get(away_key, fallback)
-if use_live and upcoming and (hr["games"] == 0 or ar["games"] == 0):
-    st.warning("At least one team has fewer than 3 completed matches. League-average ratings are used where data is insufficient.")
+labels = [f"{readable_time(f['date_utc'])} — {f['home']} vs {f['away']}" for f in upcoming]
+ix = st.selectbox("Choose an upcoming match", range(len(upcoming)), format_func=lambda i: labels[i])
+selected = upcoming[ix]
+home_name, away_name = selected['home'], selected['away']
+home_key, away_key = str(selected['hid']), str(selected['aid'])
+neutral = code == 'CL' and selected.get('stage') == 'FINAL'
 
-st.subheader(f"{home_name or 'Home'} vs {away_name or 'Away'}")
-st.caption("Strength estimates are based on goals scored and conceded, not actual xG. You can change any assumption.")
+# Every dataset comes from the football-data.org 2026/27 season-filtered
+# official match-results endpoint. Cache prevents wasteful refresh polling.
+# Limit the initial request batch to six (incl. requested competition) so the
+# football-data.org free-plan ten/minute quota has some headroom for players.
+MODEL_FEEDS = ['CL', 'PD', 'PL', 'BL1', 'SA', 'FL1']
+results_by_code = {code: finished}
+missing_codes = []
+with st.spinner("Comparing opponent quality across current-season domestic and European fixtures…"):
+    for extra in MODEL_FEEDS:
+        if extra == code:
+            continue
+        try:
+            prior, problem = load_optional_matches(extra, api_token, SEASON_YEAR)
+            if problem:
+                missing_codes.append(f"{MODEL_COMPETITIONS.get(extra, extra)}: {problem}")
+            else:
+                results_by_code[extra] = prior
+        except Exception:
+            missing_codes.append(f"{MODEL_COMPETITIONS.get(extra, extra)}: data not available")
 
-cols = st.columns(4)
-ha = cols[0].number_input("Home attack", 0.4, 2.0, round(hr["attack"], 2), 0.05, key=f"ha_{competition}_{home_key}_{away_key}")
-hd = cols[1].number_input("Home defense", 0.4, 2.0, round(hr["defense"], 2), 0.05, key=f"hd_{competition}_{home_key}_{away_key}")
-aa = cols[2].number_input("Away attack", 0.4, 2.0, round(ar["attack"], 2), 0.05, key=f"aa_{competition}_{home_key}_{away_key}")
-ad = cols[3].number_input("Away defense", 0.4, 2.0, round(ar["defense"], 2), 0.05, key=f"ad_{competition}_{home_key}_{away_key}")
-
-c1, c2 = st.columns(2)
-base = c1.slider("League-average goals per team", 0.7, 2.2, float(round(min(2.2, max(0.7, base_goals)), 2)), 0.05)
-adv = c2.slider("Home advantage multiplier", 1.0, 1.4, 1.12, 0.01, disabled=neutral)
-
-hxg, axg = expected_goals(ha, hd, aa, ad, base, adv, neutral)
-pred = simulate(hxg, axg, n=n, seed=int(seed))
+fitted = fit_strength(results_by_code, as_of=selected.get('date_utc'))
+projection = project_goals(fitted, selected['hid'], selected['aid'], code, neutral=neutral)
+hxg, axg = projection['home_goals'], projection['away_goals']
+n = 25000
+pred = simulate(hxg, axg, n=n, seed=42)
 exact = exact_markets(hxg, axg)
-a, b, c = st.columns(3)
-a.metric(f"{home_name} win", f"{exact['home_win']:.1%}")
-b.metric("Draw", f"{exact['draw']:.1%}")
-c.metric(f"{away_name} win", f"{exact['away_win']:.1%}")
-st.caption("Win/draw/loss uses exact Poisson probabilities, avoiding Monte Carlo sampling noise. Simulated scorelines remain below.")
-st.caption(f"Projected goals: {home_name} {hxg:.2f} · {away_name} {axg:.2f} | {n:,} simulated games")
 
+st.success(f"Provider-reported match score data: football-data.org · {SEASON_NAME} · {projection['n_matches']} completed games across {len(fitted['codes'])} available competitions · cache refresh roughly every 30 min on app activity")
+if missing_codes:
+    with st.expander("Unavailable competition feeds — coverage limitations"):
+        for warning in missing_codes:
+            st.write('• ' + warning)
+if code == 'CL' and not any(c in results_by_code for c in ('PD', 'PL', 'BL1', 'SA', 'FL1')):
+    st.warning("All domestic cross-league feeds were unavailable. This prediction is based on Champions League scores alone and is highly uncertain.")
+st.caption("Free-data coverage modeled automatically: Champions League, La Liga, Premier League, Bundesliga, Serie A and Ligue 1 when accessible. Portuguese, Dutch and Greek domestic results are not fetched; corresponding teams have less reliable strength estimates.")
+
+st.subheader(f"{home_name} vs {away_name}")
+st.caption("**Automatic strengths:** Provider-reported goals scored/conceded, opponent quality, recent results, home/away effect and UCL-to-domestic links. These are model-based scoring means, NOT measured xG, and are not calibrated betting odds. [Source and API documentation](https://www.football-data.org/documentation/quickstart)")
+
+ca, cb = st.columns(2)
+for panel, label, side in [(ca, home_name, 'home'), (cb, away_name, 'away')]:
+    rating = projection[side + '_rating']
+    with panel:
+        st.markdown('**' + label + '**')
+        st.caption(projection[side + '_quality'])
+        if rating:
+            st.metric('2026–27 matches in model', rating['games'])
+            st.write(f"Attack multiplier **{rating['attack']:.2f}×** · Conceded-goals multiplier **{rating['defense_conceded']:.2f}×**")
+            st.caption('Data used: ' + ', '.join(f"{MODEL_COMPETITIONS.get(c,c)} ({v})" for c,v in rating['by_competition'].items()))
+        else:
+            st.write('No verified season results for this club. Neutral league-average prior used.')
+if code == 'CL' and ((projection['home_rating'] or {}).get('domestic_games', 0) == 0 or (projection['away_rating'] or {}).get('domestic_games', 0) == 0):
+    st.warning("At least one club has no domestic results in the supported feeds. The model uses its European matches and conservative defaults; cross-league strength is uncertain.")
+
+m1, m2, m3 = st.columns(3)
+m1.metric(f"{home_name} win", f"{exact['home_win']:.1%}")
+m2.metric('Draw', f"{exact['draw']:.1%}")
+m3.metric(f"{away_name} win", f"{exact['away_win']:.1%}")
+st.caption(f"Model-projected goals: {home_name} **{hxg:.2f}**, {away_name} **{axg:.2f}** · Home advantage derived from available season results (ratio {fitted['home_ratio']:.2f})" + (" · Neutral venue modeled" if neutral else ""))
+st.caption("1X2 percentages are exact independent-Poisson calculations, not Monte Carlo estimates. 25,000 score simulations run automatically for scoreline distributions.")
 left, right = st.columns(2)
 with left:
     st.subheader("1X2 probabilities")
-    st.bar_chart(pd.DataFrame({"Probability": [pred["home_win"], pred["draw"], pred["away_win"]]}, index=["Home win", "Draw", "Away win"]))
+    st.bar_chart(pd.DataFrame({'Probability': [exact['home_win'], exact['draw'], exact['away_win']]}, index=['Home win', 'Draw', 'Away win']))
 with right:
     st.subheader("Goals markets")
-    st.bar_chart(pd.DataFrame({"Probability": [pred["over_25"], pred["under_25"], pred["btts"]]}, index=["Over 2.5", "Under 2.5", "Both score"]))
-
+    st.bar_chart(pd.DataFrame({'Probability': [exact['over_25'], exact['under_25'], exact['btts']]}, index=['Over 2.5', 'Under 2.5', 'Both score']))
 st.subheader("Most likely exact scores")
-st.dataframe(pd.DataFrame(pred["scores"], columns=["Score (home-away)", "Probability"]).style.format({"Probability": "{:.1%}"}), hide_index=True, use_container_width=True)
-
+st.dataframe(pd.DataFrame(pred['scores'], columns=['Score (home-away)', 'Probability']).style.format({'Probability': '{:.1%}'}), hide_index=True, use_container_width=True)
 
 st.divider()
-st.subheader("📊 Corners — assumption-based model")
-st.warning("football-data.org does not supply verified corner averages through this app. Values below are MANUAL assumptions, not automatically calculated match predictions. Change them using a reliable source.")
-with st.expander("Enter corner averages and estimate over/under lines", expanded=False):
-    ca, cb = st.columns(2)
-    hc = ca.number_input(f"{home_name} expected corners (your estimate)", 0.0, 20.0, 5.0, 0.1)
-    ac = cb.number_input(f"{away_name} expected corners (your estimate)", 0.0, 20.0, 4.5, 0.1)
-    if st.button("Calculate corner estimates"):
-        cr = corner_markets(hc, ac)
-        st.metric("Expected total corners", f"{cr['expected_total']:.1f}")
-        st.dataframe(pd.DataFrame([{"Line": line, "Chance": cr[key]} for line, key in
-            [("Over 7.5", "over_75"), ("Over 8.5", "over_85"), ("Over 9.5", "over_95"), ("Over 10.5", "over_105")]]).style.format({"Chance":"{:.1%}"}), hide_index=True)
-        st.caption("Simple independent Poisson corner model. Not validated against corner statistics.")
+st.subheader('🚩 Corners — automatic data not available')
+st.info('The currently configured verified free API does not provide usable season corner counts. No corner probabilities or manual estimates will be shown until a permitted, reliable data feed is connected.')
 
 st.divider()
 st.subheader(f"👥 {SEASON_NAME} player stats & experimental anytime-scorer chances")
 st.caption("Verified source: football-data.org v4 season-filtered top-scorers feed (goals, assists, penalties) plus current squads and completed matches. These are NOT comprehensive individual player logs or confirmed starters.")
-selected_match = selected if use_live and upcoming else None
+selected_match = selected
 if selected_match:
     st.caption("Official scorer totals refresh at most hourly; rosters are cached for 24 hours. Missing players are not assumed to have zero goals.")
     if st.button("🔎 Load rosters + this-season player statistics"):
@@ -206,20 +221,20 @@ if selected_match:
         scorer_by_comp = {}
         issues = []
         with st.spinner("Loading published scorer feeds and this-season club results…"):
-            for code in LEAGUES:
+            for scorer_code in LEAGUES:
                 try:
-                    rows, maybe_truncated = load_scorers(code, api_token, SEASON_YEAR)
-                    scorer_by_comp[code] = rows
+                    rows, maybe_truncated = load_scorers(scorer_code, api_token, SEASON_YEAR)
+                    scorer_by_comp[scorer_code] = rows
                     if maybe_truncated:
-                        issues.append(f"{LEAGUES[code]} may be truncated at its top-scorer API limit.")
+                        issues.append(f"{LEAGUES[scorer_code]} may be truncated at its top-scorer API limit.")
                 except StatsUnavailable as exc:
                     issues.append(str(exc))
-                if code not in all_results:
+                if scorer_code not in all_results:
                     try:
-                        other_finished, _ = load_matches(code, api_token, SEASON_YEAR)
-                        all_results[code] = other_finished
+                        other_finished, _ = load_matches(scorer_code, api_token, SEASON_YEAR)
+                        all_results[scorer_code] = other_finished
                     except ValueError as exc:
-                        issues.append(f"{LEAGUES[code]} result data unavailable for shares: {exc}")
+                        issues.append(f"{LEAGUES[scorer_code]} result data unavailable for shares: {exc}")
         totals = team_totals_by_comp(all_results)
         if not scorer_by_comp:
             st.warning("Current-season scorer data is unavailable with your API access. We will display rosters, but no player-specific probabilities.")
@@ -255,7 +270,7 @@ if selected_match:
         if scorer_by_comp:
             with st.expander(f"📈 Overall {SEASON_NAME} scorer-feed leaders (all 3 competitions)"):
                 combined = {}
-                for code, rows in scorer_by_comp.items():
+                for leaderboard_code, rows in scorer_by_comp.items():
                     for r in rows:
                         identity = (r["id"] if r["id"] is not None else r["name"], r["team_id"])
                         entry = combined.setdefault(identity, {"Player": r["name"], "Team": r["team"], "Goals": 0,
@@ -269,7 +284,7 @@ if selected_match:
                             entry["Penalties"] += r["penalties"]
                         else:
                             entry["_missing_penalties"] = True
-                        entry["Goals leagues"].append(LEAGUES[code])
+                        entry["Goals leagues"].append(LEAGUES[leaderboard_code])
                 summary = sorted(combined.values(), key=lambda r: -r["Goals"])
                 if summary:
                     for r in summary:
@@ -288,48 +303,31 @@ if selected_match:
 else:
     st.info("Choose an upcoming match from the live fixtures to load the current-season scorer reports for both squads.")
 
-st.subheader("🥅 Optional manual anytime-goalscorer estimate")
-st.warning("Manual model only. Enter participation and scoring assumptions yourself; predictions are not validated.")
-with st.expander("Enter a player and scoring assumptions", expanded=False):
-    player = st.text_input("Player name (enter manually)", placeholder="Enter a player")
-    side = st.radio("Team", [home_name, away_name], horizontal=True)
-    share = st.slider("Assumed share of team goals", 0.0, 1.0, 0.25, 0.01)
-    minutes = st.slider("Expected minutes if playing", 0, 120, 80, 5)
-    start_prob = st.slider("Probability player participates (1.0 if confirmed)", 0.0, 1.0, 0.8, 0.05)
-    st.caption("Before lineups: enter your estimated participation probability. After confirmation: set to 100% if playing; adjust minutes as appropriate.")
-    if st.button("Calculate player chance"):
-        if not player.strip():
-            st.error("Enter a player name first.")
-        else:
-            team_goals = hxg if side == home_name else axg
-            scorer_prob = anytime_scorer(team_goals, share, minutes, start_prob)
-            st.metric(f"{player.strip()} — anytime scorer estimate", f"{scorer_prob:.1%}")
-            st.caption("Conditional model using assumed goal-share, playing time and participation. Not a validated player forecast.")
-
-if use_live and len(finished) >= 25:
+if len(finished) >= 25:
     st.divider()
     st.subheader("🧪 Historical rolling backtest")
-    st.caption("Each result is predicted using only PRIOR days in the current API-returned competition data. This is a small, within-season test and cannot validate cross-league adjustments.")
-    if st.button("Run historical backtest"):
-        backtest = rolling_backtest(finished)
+    st.caption("For each past fixture, both models are trained only on earlier calendar days from this season. We compare their out-of-sample errors; a new model can score worse.")
+    if st.button("Compare models on past fixtures"):
+        backtest = compare_backtest(results_by_code, code)
         if backtest:
             df = pd.DataFrame(backtest)
-            c1, c2 = st.columns(2)
-            c1.metric("Matches tested", len(df))
-            c2.metric("Mean Brier score (lower is better)", f"{df['brier'].mean():.3f}")
-            st.metric("Mean log loss (lower is better)", f"{df['log_loss'].mean():.3f}")
+            st.metric("Past matches tested (no same-day result leakage)", len(df))
+            st.dataframe(pd.DataFrame([
+                {'Model': 'Previous V4.4', 'Mean Brier': df['V4.4 Brier'].mean(), 'Mean log loss': df['V4.4 log loss'].mean()},
+                {'Model': 'New V4.5', 'Mean Brier': df['V4.5 Brier'].mean(), 'Mean log loss': df['V4.5 log loss'].mean()}
+            ]).style.format({'Mean Brier':'{:.3f}', 'Mean log loss':'{:.3f}'}), hide_index=True)
             st.dataframe(df, hide_index=True, use_container_width=True)
-            st.download_button("Download backtest CSV", df.to_csv(index=False).encode(), "backtest.csv", "text/csv")
-            st.caption("These are diagnostic scores, not claims of predictive accuracy. More seasons and independent holdouts are needed.")
+            st.download_button("Download comparable backtest CSV", df.to_csv(index=False).encode(), 'v45_backtest.csv', 'text/csv')
+            st.caption("Lower loss is better. New model may perform worse. Neither model is proven calibrated; only earlier-dated matches were used to predict each fixture.")
         else:
-            st.info("Not enough prior matches with three games per team to run a leak-free backtest.")
+            st.info("Not enough earlier match results to compare models without future-data leakage.")
 else:
     st.caption("Historical backtest available when a competition has at least 25 completed API fixtures.")
 
 report = pd.DataFrame([{"competition": competition, "home": home_name, "away": away_name,
                         "projected_home_goals": hxg, "projected_away_goals": axg, "home_win": exact["home_win"],
-                        "draw": exact["draw"], "away_win": exact["away_win"], "over_2_5": pred["over_25"],
-                        "both_score": pred["btts"], "simulations": n,
-                        "data_source": "football-data.org" if use_live else "manual", "season": SEASON_NAME}])
+                        "draw": exact["draw"], "away_win": exact["away_win"], "over_2_5": exact["over_25"],
+                        "both_score": exact["btts"], "simulations": n,
+                        "data_source": "football-data.org season results", "season": SEASON_NAME}])
 st.download_button("Download prediction CSV", report.to_csv(index=False).encode(), "soccer_prediction.csv", "text/csv")
-st.caption(f"Important: {SEASON_NAME} only. Poisson match model is experimental, not a betting edge. Player statistics are provider-reported official scorer-list goals/assists/penalties, not full per-player xG/minutes/shots. Automatic player chances use seasonal team-goal shares, not same-position presets; they are uncalibrated and do not account for confirmed lineups or injuries. Champions League strengths are not cross-league calibrated. More simulations reduce sampling noise, not model error. Refresh happens on app activity.")
+st.caption(f"Important: {SEASON_NAME} only. Strength ratings use official provider-reported match scores and regularized opponent-adjusted Poisson estimates, not measured xG. Cross-league comparisons are connected through UEFA matches where available, but not externally calibrated. Player statistics are partial scorer-feed totals; scorer probabilities are experimental and do not account for confirmed lineups, injuries, minutes or shots. Corners are unavailable without verified data. Backtest comparisons, not simulated counts, indicate prediction performance. Refresh requires app activity.")
