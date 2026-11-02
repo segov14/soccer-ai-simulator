@@ -75,7 +75,7 @@ def readable_time(utc_string):
         return utc_string or "Date not announced"
 
 
-st.title("⚽ Soccer AI Simulator · V4.1")
+st.title("⚽ Soccer AI Simulator · V4.3")
 st.caption("La Liga · Champions League · Premier League | Automatically updated match data • Experimental probabilities")
 
 with st.sidebar:
@@ -201,7 +201,7 @@ if selected_match:
                         team_goals = hxg if tid == selected_match['hid'] else axg
                         scenario = scorer_scenarios(roster, team_goals)
                         df_scenario = pd.DataFrame(scenario)
-                        df_scenario['Chance if playing'] = df_scenario['Chance if playing'].map(lambda v: f"{v:.1%}" if pd.notna(v) else "N/A")
+                        df_scenario['Chance if playing'] = df_scenario['Chance if playing'].map(lambda v: f"{v:.1%}" if pd.notna(v) else "Insufficient position data")
                         st.dataframe(df_scenario, hide_index=True, use_container_width=True)
                         st.caption("Assumptions: a hypothetical 4-3-3-like team structure, position-level scoring-share weights, 75 minutes played, and team goals from this simulator. No player-specific goal history, actual xG, recent injuries, or confirmed lineup data. Goalkeeper, defender, midfielder and attacker category mappings are approximate.")
                 else:
@@ -256,4 +256,4 @@ report = pd.DataFrame([{"competition": competition, "home": home_name, "away": a
                         "both_score": pred["btts"], "simulations": n,
                         "data_source": "football-data.org" if use_live else "manual"}])
 st.download_button("Download prediction CSV", report.to_csv(index=False).encode(), "soccer_prediction.csv", "text/csv")
-st.caption("Important: Experimental Poisson model, not trained AI or a proven betting edge. No verified xG or injuries. Rosters are from football-data.org where available; they are not starting lineups and automatic scorer estimates are disabled. Champions League ratings use ONLY available Champions League results, not verified cross-league calibrations. More simulations reduce sampling noise, not model error. API coverage varies; refresh happens on app activity.")
+st.caption("Important: Experimental Poisson model, not trained AI or a proven betting edge. No verified xG or injuries. Rosters are from football-data.org where available; they are not starting lineups and automatic scorer estimates are illustrative and role-based, not verified player forecasts. Champions League ratings use ONLY available Champions League results, not verified cross-league calibrations. More simulations reduce sampling noise, not model error. API coverage varies; refresh happens on app activity.")

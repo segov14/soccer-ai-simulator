@@ -8,14 +8,23 @@ DENOMINATOR = 3 * 1.0 + 4 * 0.48 + 3 * 0.16 + 0.01
 
 
 def role_for_position(position):
-    p = str(position or '').lower()
-    if any(x in p for x in ('goalkeeper', 'keeper', 'goalie')):
+    """Normalize common football-data.org and third-party position spellings.
+
+    Unknown stays unknown: a squad listing alone cannot establish a player's role.
+    """
+    import re
+    raw = str(position or '').strip().casefold()
+    p = re.sub(r'[^a-z0-9]+', ' ', raw).strip()
+    compact = p.replace(' ', '')
+    if not p or p in ('none', 'null', 'unknown', 'n a', 'not available', 'unspecified'):
+        return 'Unknown'
+    if any(x in compact for x in ('goalkeeper', 'goalie', 'keeper', 'goaltender')) or compact in ('gk',):
         return 'Goalkeeper'
-    if any(x in p for x in ('defence', 'defense', 'defender', 'back')):
+    if any(x in compact for x in ('defence', 'defense', 'defender', 'centreback', 'centerback', 'fullback', 'wingback')) or compact in ('cb', 'lb', 'rb', 'lwb', 'rwb'):
         return 'Defence'
-    if any(x in p for x in ('midfield', 'midfielder')):
+    if any(x in compact for x in ('midfield', 'midfielder', 'playmaker')) or compact in ('cm', 'cdm', 'cam', 'dm', 'am', 'lm', 'rm'):
         return 'Midfield'
-    if any(x in p for x in ('attack', 'forward', 'striker', 'winger')):
+    if any(x in compact for x in ('attack', 'offence', 'offense', 'forward', 'striker', 'winger', 'secondstriker')) or compact in ('cf', 'st', 'ss', 'lw', 'rw', 'lf', 'rf') or p in ('left wing', 'right wing', 'centre forward', 'center forward'):
         return 'Attack'
     return 'Unknown'
 

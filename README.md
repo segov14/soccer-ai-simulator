@@ -44,3 +44,7 @@ Unknown positions have no estimate. **These are not betting odds.**
 
 The score model and existing free data integration are unchanged. The football-data.org
 API key stays in Streamlit Secrets. No API-Football paid subscription is required.
+
+## Version 4.3 position mapping fix
+
+Recognizes extra attacking role labels including `Offence`, `Offense`, `Left Wing`, `Right Wing`, `LW`, `RW`, and other common position names. Every roster member remains visible. An unrecognized or missing position is labeled **Insufficient position data**, not assigned an invented scoring probability. Percentages continue to be hypothetical, role-only, conditional on 75 minutes played, and should not be interpreted as calibrated probabilities or betting advice.
