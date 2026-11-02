@@ -10,7 +10,7 @@ class RosterUnavailable(Exception):
 def parse_team_roster(payload):
     """Return available squad records, without guessing starters or scoring rates."""
     records = payload.get('squad') or []
-    return [{'Name': p['name'], 'Position': p.get('position') or 'Unknown',
+    return [{'ID': p.get('id'), 'Name': p['name'], 'Position': p.get('position') or 'Unknown',
              'Nationality': p.get('nationality') or 'Unknown'}
             for p in records if isinstance(p, dict) and p.get('name')]
 

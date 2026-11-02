@@ -9,10 +9,14 @@ import streamlit as st
 from model import expected_goals, simulate, rating_from_results
 from advanced import exact_markets, corner_markets, anytime_scorer, rolling_backtest
 from free_players import fetch_team_roster, RosterUnavailable
-from automatic_scorers import scorer_scenarios
+from season_stats import (fetch_scorers, season_matches_only, team_totals_by_comp,
+                          combine_player_rows, current_season_year, season_label,
+                          StatsUnavailable, LEAGUES)
 
 st.set_page_config(page_title="Soccer AI Simulator", page_icon="⚽", layout="wide")
 COMPETITIONS = {"La Liga": "PD", "Champions League": "CL", "Premier League": "PL"}
+SEASON_YEAR = current_season_year()
+SEASON_NAME = season_label(SEASON_YEAR)
 API_ROOT = "https://api.football-data.org/v4"
 
 
@@ -26,12 +30,12 @@ def get_token():
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def load_matches(competition_code: str, api_token: str):
+def load_matches(competition_code: str, api_token: str, season_year: int):
     """Request competition fixtures/results once per 30-minute cache period."""
     try:
         response = requests.get(
             f"{API_ROOT}/competitions/{competition_code}/matches",
-            headers={"X-Auth-Token": api_token}, timeout=20,
+            headers={"X-Auth-Token": api_token}, params={"season": int(season_year)}, timeout=20,
         )
         response.raise_for_status()
         payload = response.json()
@@ -60,12 +64,18 @@ def load_matches(competition_code: str, api_token: str):
             finished.append({**item, "hg": score["home"], "ag": score["away"]})
         elif m.get("status") in ("SCHEDULED", "TIMED"):
             upcoming.append(item)
+    finished, upcoming = season_matches_only(finished, upcoming, season_year)
     return finished, sorted(upcoming, key=lambda item: item["date_utc"])
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def load_roster(team_id, api_token):
     return fetch_team_roster(team_id, api_token)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_scorers(code, api_token, season_year):
+    return fetch_scorers(code, api_token, season_year)
 
 
 def readable_time(utc_string):
@@ -75,8 +85,8 @@ def readable_time(utc_string):
         return utc_string or "Date not announced"
 
 
-st.title("⚽ Soccer AI Simulator · V4.3")
-st.caption("La Liga · Champions League · Premier League | Automatically updated match data • Experimental probabilities")
+st.title("⚽ Soccer AI Simulator · V4.4")
+st.caption(f"La Liga · Champions League · Premier League | {SEASON_NAME} ONLY · Verified provider-reported goal totals · Experimental predictions")
 
 with st.sidebar:
     st.header("Settings")
@@ -88,6 +98,8 @@ with st.sidebar:
                        help="Use your own team names and strength ratings without the API.")
     if st.button("↻ Refresh soccer data"):
         load_matches.clear()
+        load_scorers.clear()
+        load_roster.clear()
         st.rerun()
 
 finished, upcoming, ratings = [], [], {}
@@ -100,11 +112,11 @@ if not api_token and not manual:
 elif use_live:
     try:
         with st.spinner("Loading the latest competition results and fixtures…"):
-            finished, upcoming = load_matches(COMPETITIONS[competition], api_token)
+            finished, upcoming = load_matches(COMPETITIONS[competition], api_token, SEASON_YEAR)
         # Build ratings using the same team IDs, not potentially inconsistent names.
         rating_matches = [{"home": str(m["hid"]), "away": str(m["aid"]), "hg": m["hg"], "ag": m["ag"]} for m in finished]
         ratings, base_goals = rating_from_results(rating_matches)
-        st.success(f"Auto-data connected · {len(finished)} completed matches · {len(upcoming)} upcoming matches · refreshed approximately every 30 minutes")
+        st.success(f"Auto-data connected · {SEASON_NAME} season · {len(finished)} completed matches · {len(upcoming)} upcoming matches · refreshed approximately every 30 minutes")
     except ValueError as exc:
         st.error(str(exc))
         st.info("You can still use Manual / offline mode in the sidebar.")
@@ -182,35 +194,99 @@ with st.expander("Enter corner averages and estimate over/under lines", expanded
         st.caption("Simple independent Poisson corner model. Not validated against corner statistics.")
 
 st.divider()
-st.subheader("👥 Team rosters — free football-data.org data")
-st.caption("Players below are squad members listed by football-data.org, NOT confirmed starters. Roster coverage and freshness depend on the provider and your free plan.")
+st.subheader(f"👥 {SEASON_NAME} player stats & experimental anytime-scorer chances")
+st.caption("Verified source: football-data.org v4 season-filtered top-scorers feed (goals, assists, penalties) plus current squads and completed matches. These are NOT comprehensive individual player logs or confirmed starters.")
 selected_match = selected if use_live and upcoming else None
 if selected_match:
-    st.caption("Roster requests are cached for 24 hours to conserve your free API allowance.")
-    if st.button("🔎 Load both team rosters"):
-        st.session_state['roster_match_loaded'] = selected_match['id']
-    if st.session_state.get('roster_match_loaded') == selected_match['id']:
-        for name, tid in [(home_name, selected_match['hid']), (away_name, selected_match['aid'])]:
-            st.markdown(f"**{name} — squad (not starting XI)**")
+    st.caption("Official scorer totals refresh at most hourly; rosters are cached for 24 hours. Missing players are not assumed to have zero goals.")
+    if st.button("🔎 Load rosters + this-season player statistics"):
+        st.session_state["player_stats_match_loaded"] = (competition, selected_match["id"], SEASON_YEAR)
+    if st.session_state.get("player_stats_match_loaded") == (competition, selected_match["id"], SEASON_YEAR):
+        all_results = {COMPETITIONS[competition]: finished}
+        scorer_by_comp = {}
+        issues = []
+        with st.spinner("Loading published scorer feeds and this-season club results…"):
+            for code in LEAGUES:
+                try:
+                    rows, maybe_truncated = load_scorers(code, api_token, SEASON_YEAR)
+                    scorer_by_comp[code] = rows
+                    if maybe_truncated:
+                        issues.append(f"{LEAGUES[code]} may be truncated at its top-scorer API limit.")
+                except StatsUnavailable as exc:
+                    issues.append(str(exc))
+                if code not in all_results:
+                    try:
+                        other_finished, _ = load_matches(code, api_token, SEASON_YEAR)
+                        all_results[code] = other_finished
+                    except ValueError as exc:
+                        issues.append(f"{LEAGUES[code]} result data unavailable for shares: {exc}")
+        totals = team_totals_by_comp(all_results)
+        if not scorer_by_comp:
+            st.warning("Current-season scorer data is unavailable with your API access. We will display rosters, but no player-specific probabilities.")
+        if issues:
+            with st.expander("API coverage and missing-data notices"):
+                for issue in issues:
+                    st.write("• " + issue)
+        for name, tid in [(home_name, selected_match["hid"]), (away_name, selected_match["aid"])]:
+            st.markdown(f"### {name} — {SEASON_NAME} player overview")
             try:
                 roster = load_roster(tid, api_token)
-                if roster:
-                    st.dataframe(pd.DataFrame(roster), hide_index=True, use_container_width=True)
-                    with st.expander(f"Illustrative scorer chances — {name} (role-only, LOW confidence)", expanded=True):
-                        st.warning("These are NOT statistical forecasts, betting odds, or verified player scoring rates. Each percentage is conditional on that player appearing for 75 minutes. We do not know which players will start or play. All players of the same listed position get the same baseline. Do not use these numbers as wagering advice.")
-                        team_goals = hxg if tid == selected_match['hid'] else axg
-                        scenario = scorer_scenarios(roster, team_goals)
-                        df_scenario = pd.DataFrame(scenario)
-                        df_scenario['Chance if playing'] = df_scenario['Chance if playing'].map(lambda v: f"{v:.1%}" if pd.notna(v) else "Insufficient position data")
-                        st.dataframe(df_scenario, hide_index=True, use_container_width=True)
-                        st.caption("Assumptions: a hypothetical 4-3-3-like team structure, position-level scoring-share weights, 75 minutes played, and team goals from this simulator. No player-specific goal history, actual xG, recent injuries, or confirmed lineup data. Goalkeeper, defender, midfielder and attacker category mappings are approximate.")
-                else:
-                    st.info("No squad members were returned for this club. The free plan may not include this roster.")
             except RosterUnavailable as error:
                 st.info(str(error))
-        st.info("Illustrative role-based chances are shown above where positions are available. Verified player-based goalscorer forecasts and confirmed lineups remain unavailable on this free-data setup.")
+                roster = []
+            if roster:
+                team_mean = hxg if tid == selected_match["hid"] else axg
+                rows = combine_player_rows(roster, tid, scorer_by_comp, totals, team_mean)
+                sample_size = sum(r["Anytime chance (experimental)"] is not None for r in rows)
+                c_a, c_b, c_c = st.columns(3)
+                c_a.metric("Squad members", len(rows))
+                c_b.metric("With published scorer records", sum(r["Goals"] is not None for r in rows))
+                c_c.metric("With experimental estimates", sample_size)
+                frame = pd.DataFrame(rows)
+                frame["Anytime chance (experimental)"] = frame["Anytime chance (experimental)"].map(
+                    lambda prob: f"{prob:.1%}" if prob is not None else "No verified player scoring data")
+                st.dataframe(frame.drop(columns=["Source URLs", "Season"]), hide_index=True, use_container_width=True)
+                st.download_button(f"Download {name} current-season player stats CSV",
+                                   frame.to_csv(index=False).encode("utf-8"),
+                                   f"team_stats_{tid}_{SEASON_YEAR}.csv", "text/csv", key=f"team_csv_{tid}_{SEASON_YEAR}")
+                st.caption("The same position does NOT mean the same percentage: estimates now depend on that player's reported goals divided by goals scored by their team in the same published competitions. Missing scorer records = unknown, not zero.")
+            else:
+                st.info("The provider did not return a squad for this team.")
+        if scorer_by_comp:
+            with st.expander(f"📈 Overall {SEASON_NAME} scorer-feed leaders (all 3 competitions)"):
+                combined = {}
+                for code, rows in scorer_by_comp.items():
+                    for r in rows:
+                        identity = (r["id"] if r["id"] is not None else r["name"], r["team_id"])
+                        entry = combined.setdefault(identity, {"Player": r["name"], "Team": r["team"], "Goals": 0,
+                                  "Assists": 0, "Penalties": 0, "Goals leagues": [], "_missing_assists": False, "_missing_penalties": False})
+                        entry["Goals"] += r["goals"]
+                        if r["assists"] is not None:
+                            entry["Assists"] += r["assists"]
+                        else:
+                            entry["_missing_assists"] = True
+                        if r["penalties"] is not None:
+                            entry["Penalties"] += r["penalties"]
+                        else:
+                            entry["_missing_penalties"] = True
+                        entry["Goals leagues"].append(LEAGUES[code])
+                summary = sorted(combined.values(), key=lambda r: -r["Goals"])
+                if summary:
+                    for r in summary:
+                        r["Goals leagues"] = ", ".join(r["Goals leagues"])
+                        if r.pop("_missing_assists"):
+                            r["Assists"] = None
+                        if r.pop("_missing_penalties"):
+                            r["Penalties"] = None
+                    st.dataframe(pd.DataFrame(summary), hide_index=True, use_container_width=True)
+                    st.download_button("Download current-season published scorer overview CSV",
+                                       pd.DataFrame(summary).to_csv(index=False).encode("utf-8"),
+                                       f"published_scorers_{SEASON_YEAR}.csv", "text/csv")
+                st.caption("Partial top-scorer feed; NOT an exhaustive all-player statistics table. All totals come only from this season's available PL, La Liga and Champions League scorer endpoints. Missing assists or penalties are not necessarily zero.")
+        st.warning("Experimental estimates only: a player's current-season goal SHARE is applied to this match's projected team goals using 1 − exp(−team goals × share). No verified playing minutes, shots, expected goals, injury information, or lineup participation are available from these free endpoints. This is not a validated anytime-goalscorer betting probability.")
+        st.markdown("Data: [football-data.org API documentation](https://www.football-data.org/documentation/quickstart) · [scorers API reference](https://docs.football-data.org/general/v4/competition.html)")
 else:
-    st.info("Choose an upcoming match from the live fixtures to load its available team rosters.")
+    st.info("Choose an upcoming match from the live fixtures to load the current-season scorer reports for both squads.")
 
 st.subheader("🥅 Optional manual anytime-goalscorer estimate")
 st.warning("Manual model only. Enter participation and scoring assumptions yourself; predictions are not validated.")
@@ -254,6 +330,6 @@ report = pd.DataFrame([{"competition": competition, "home": home_name, "away": a
                         "projected_home_goals": hxg, "projected_away_goals": axg, "home_win": exact["home_win"],
                         "draw": exact["draw"], "away_win": exact["away_win"], "over_2_5": pred["over_25"],
                         "both_score": pred["btts"], "simulations": n,
-                        "data_source": "football-data.org" if use_live else "manual"}])
+                        "data_source": "football-data.org" if use_live else "manual", "season": SEASON_NAME}])
 st.download_button("Download prediction CSV", report.to_csv(index=False).encode(), "soccer_prediction.csv", "text/csv")
-st.caption("Important: Experimental Poisson model, not trained AI or a proven betting edge. No verified xG or injuries. Rosters are from football-data.org where available; they are not starting lineups and automatic scorer estimates are illustrative and role-based, not verified player forecasts. Champions League ratings use ONLY available Champions League results, not verified cross-league calibrations. More simulations reduce sampling noise, not model error. API coverage varies; refresh happens on app activity.")
+st.caption(f"Important: {SEASON_NAME} only. Poisson match model is experimental, not a betting edge. Player statistics are provider-reported official scorer-list goals/assists/penalties, not full per-player xG/minutes/shots. Automatic player chances use seasonal team-goal shares, not same-position presets; they are uncalibrated and do not account for confirmed lineups or injuries. Champions League strengths are not cross-league calibrated. More simulations reduce sampling noise, not model error. Refresh happens on app activity.")
