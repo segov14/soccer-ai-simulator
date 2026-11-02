@@ -1,36 +1,35 @@
-# Soccer AI Simulator V4 — automatic player lookup
+# Soccer AI Simulator V4.1 — Free Roster Edition
 
-## Deploy on your existing Streamlit site
-
-1. Extract this ZIP, and upload **all files inside it** to the **root** of your existing `segov14/soccer-ai-simulator` GitHub repository. Replace the older files, and commit changes to the same branch Streamlit uses.
-2. In **Streamlit Cloud → app settings → Secrets**, retain your existing key and configure the new one (do not commit it to GitHub):
-
-```toml
-FOOTBALL_DATA_API_KEY = "your_existing_key"
-API_FOOTBALL_KEY = "your_api_football_key"
-```
-
-3. Let Streamlit redeploy, then choose a competition and an upcoming match. Click **Load players for this match** in the new player panel. API-Football data is fetched only on demand to conserve the free plan's request quota.
-4. If an error indicates the endpoint/season is unavailable, check your API-Football subscription's supported seasons. The free plan may not have current 2026/27 data.
+Streamlit app for match simulations in La Liga, Champions League, and Premier League.
 
 ## What's new
 
-- Resolves the selected football-data.org fixture to an API-Football fixture by competition, date and team names. **Will not guess if resolution is uncertain.**
-- Loads **confirmed lineups where available** and shows the squad otherwise (clearly marked **NOT confirmed or predicted starters**).
-- Uses available player season goals and minutes to produce **illustrative** anytime goalscorer probabilities **only when a lineup and player statistics exist**. These are rough proportional estimates, not calibrated real-player xG forecasts; first page only, so incomplete data possible. Treat missing players as unavailable, never as zero-quality players.
-- Matches and API-Football resources are cached; no automatic polling of advanced data and no guarantee of availability on the free plan. Existing football-data.org fixtures refresh while the app is active approximately every 30 min.
-- Preserves V3 simulation, Poisson result odds, manual corners, optional manual player estimates and backtesting.
+- Retrieves team rosters from the same football-data.org API already used for match results (`GET /v4/teams/{team_id}`).
+- No longer attempts to use the restricted API-Football current-season fixtures/lineup/player endpoints.
+- Roster lists clearly state **squad members, not confirmed starters**. If access is restricted, the app displays a friendly unavailable message rather than failing.
+- Automatic goalscorer probabilities are **disabled** because rosters alone cannot establish likely participation or player goalscoring rates. The optional manual assumption-based scorer calculator remains available.
+- All original match simulations, corners (manual assumptions) and historical backtesting remain in place.
 
-## Limitations
+## Deploy
 
-**Corners remain manual**, since no validated automated corners model has been added. API-Football free plans and competition coverage vary. Squads do not imply playing time. Lineups may arrive shortly before kickoff, or later. API-Football IDs are not interchangeable with football-data.org IDs. The player probabilities are illustrative, not validated betting forecasts. The simulator still lacks proper calibrated cross-league team quality, player xG, injuries, venue-specific player modeling and independently validated corner predictions.
+Upload the extracted project files to the repository root on GitHub, replacing existing files. Streamlit Community Cloud should redeploy from your existing repository.
 
-## Local development
+Streamlit Secrets only needs:
+
+```toml
+FOOTBALL_DATA_API_KEY = "your_private_key"
+```
+
+`API_FOOTBALL_KEY` can remain in Streamlit Secrets but **is not used** in V4.1. Never commit secrets or keys to GitHub.
+
+## Test
 
 ```bash
 python -m pip install -r requirements.txt
-python -m streamlit run app.py
-python -m pytest -q
+python -m unittest discover -p 'test_*.py'
+streamlit run app.py
 ```
 
-Set `FOOTBALL_DATA_API_KEY` and `API_FOOTBALL_KEY` as environment variables for local runs. `pytest` is required only for testing; install it separately. Don't add any key to `.py` files, committed TOML, `.env`, or GitHub.
+### Limitations
+
+Available roster names may not be current or included in the free football-data.org plan. No official lineups, current player scoring stats, or verified corner data are implied. The simulator's result probabilities are experimental and not demonstrated to provide a betting edge.
